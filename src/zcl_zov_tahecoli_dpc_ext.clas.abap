@@ -4,6 +4,9 @@ class ZCL_ZOV_TAHECOLI_DPC_EXT definition
   create public .
 
 public section.
+
+  methods /IWBEP/IF_MGW_APPL_SRV_RUNTIME~CREATE_DEEP_ENTITY
+    redefinition .
 protected section.
 
   methods MENSAGEMSET_CREATE_ENTITY
@@ -495,5 +498,134 @@ CLASS ZCL_ZOV_TAHECOLI_DPC_EXT IMPLEMENTATION.
           message_container = lo_msg.
     ENDIF.
 
+  ENDMETHOD.
+
+
+  METHOD /iwbep/if_mgw_appl_srv_runtime~create_deep_entity.
+    DATA: ls_deep_entity TYPE zcl_zov_tahecoli_mpc_ext=>ty_ordem_item.
+    DATA: ls_deep_item   TYPE zcl_zov_tahecoli_mpc_ext=>ts_ovitem.
+
+    DATA: ls_cab   TYPE zovcab_tahecoli.
+    DATA: lt_item  TYPE STANDARD TABLE OF zovitem_tahecoli.
+    DATA: ls_item  TYPE zovitem_tahecoli.
+    DATA: ld_updkz TYPE char1.
+
+    DATA(lo_msg) = /iwbep/if_mgw_conv_srv_runtime~get_message_container( ).
+
+    CALL METHOD io_data_provider->read_entry_data
+      IMPORTING
+        es_data = ls_deep_entity.
+
+    "Cabeçalho
+    IF ls_deep_entity-ordemid = 0. "Se for id igual a zero é uma ordem nova
+      ld_updkz = 'I'.
+      MOVE-CORRESPONDING ls_deep_entity TO ls_cab.
+
+      ls_cab-criacao_data    = sy-datum.
+      ls_cab-criacao_hora    = sy-uzeit.
+      ls_cab-criacao_usuario = sy-uname.
+
+      SELECT SINGLE MAX( ordemid )
+        INTO ls_cab-ordemid
+        FROM zovcab_tahecoli.
+
+      ls_cab-ordemid = ls_cab-ordemid + 1.
+    ELSE.                        "Se for diferente de zero vamos atualizar.
+      ld_updkz = 'U'.
+
+      " carregando dados atuais
+      SELECT SINGLE *
+        INTO ls_cab
+        FROM zovcab_tahecoli
+        WHERE ordemid = ls_deep_entity-ordemid.
+
+      ls_cab-clienteid  = ls_deep_entity-clienteid.
+      ls_cab-status     = ls_deep_entity-status.
+      ls_cab-totalitens = ls_deep_entity-totalitens.
+      ls_cab-totalfrete = ls_deep_entity-totalfrete.
+      ls_cab-totalordem = ls_deep_entity-totalordem.
+    ENDIF.
+
+    "item
+    LOOP AT ls_deep_entity-toovitem INTO ls_deep_item.
+      MOVE-CORRESPONDING ls_deep_item TO ls_item.
+
+      ls_item-ordemitem = ls_cab-ordemid.
+      APPEND ls_item TO lt_item.
+    ENDLOOP.
+
+    "Persistencia cabeçalho
+    IF ld_updkz = 'I'.
+      INSERT zovcab_tahecoli FROM ls_cab.
+      IF sy-subrc <> 0.
+        ROLLBACK WORK.
+
+        lo_msg->add_message_text_only(
+        EXPORTING
+          iv_msg_type = 'E'
+          iv_msg_text = 'Erro ao inserir ordem'
+          ).
+
+        RAISE EXCEPTION TYPE /iwbep/cx_mgw_busi_exception
+          EXPORTING
+            message_container = lo_msg.
+      ENDIF.
+    ELSE.
+      MODIFY zovcab_tahecoli FROM ls_cab.
+      IF sy-subrc <> 0.
+        ROLLBACK WORK.
+
+        lo_msg->add_message_text_only(
+        EXPORTING
+          iv_msg_type = 'E'
+          iv_msg_text = 'Erro ao atualizar ordem'
+          ).
+
+        RAISE EXCEPTION TYPE /iwbep/cx_mgw_busi_exception
+          EXPORTING
+            message_container = lo_msg.
+      ENDIF.
+    ENDIF.
+
+    "Persistência de Itens
+    DELETE FROM zovitem_tahecoli WHERE ordemitem = ls_cab-ordemid.
+    IF lines( lt_item ) > 0.
+      INSERT zovitem_tahecoli FROM TABLE lt_item.
+      IF sy-subrc <> 0.
+        ROLLBACK WORK.
+
+        lo_msg->add_message_text_only(
+        EXPORTING
+           iv_msg_type = 'E'
+           iv_msg_text = 'Erro ao inserir item'
+           ).
+
+        RAISE EXCEPTION TYPE /iwbep/cx_mgw_busi_exception
+          EXPORTING
+            message_container = lo_msg.
+      ENDIF.
+    ENDIF.
+
+    COMMIT WORK AND WAIT.
+
+    "Atualizando deep entity de retorno
+
+    "Cabeçalho
+    ls_deep_entity-ordemid = ls_cab-ordemid.
+    CONVERT DATE ls_cab-criacao_data
+            TIME ls_cab-criacao_hora
+            INTO TIME STAMP ls_deep_entity-datacriacao
+            TIME ZONE sy-zonlo.
+
+    "Item
+    LOOP AT ls_deep_entity-toovitem ASSIGNING FIELD-SYMBOL(<ls_deep_item>).
+      <ls_deep_item>-ordemid = ls_cab-ordemid.
+    ENDLOOP.
+
+    CALL METHOD me->copy_data_to_ref
+      EXPORTING
+        is_data = ls_deep_entity
+      CHANGING
+        cr_data = er_deep_entity.
   ENDMETHOD.
 ENDCLASS.
